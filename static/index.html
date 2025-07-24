@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Mock Test App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .view { display: none; }
+        .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
+        @keyframes fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        /* Simple spinner for loading states */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #fff;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        /* Collapsed state for manual question cards */
+        .manual-q-card.collapsed .manual-q-body {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
+
+    <main class="w-full max-w-4xl">
+        <!-- Loading View -->
+        <div id="view-loading" class="view text-center">
+            <h2 class="text-2xl font-bold animate-pulse">Initializing Your Personal Test Center...</h2>
+        </div>
+
+        <!-- Test List View -->
+        <div id="view-list" class="view p-4 md:p-8 bg-gray-800 rounded-xl shadow-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold text-blue-400">My Mock Tests</h2>
+                <button onclick="showView('create')" class="flex items-center justify-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition shadow-md">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+                    Create New
+                </button>
+            </div>
+            <div id="test-list-container" class="space-y-4">
+                <!-- Tests will be rendered here by JavaScript -->
+            </div>
+        </div>
+
+        <!-- Test Creator View -->
+        <div id="view-create" class="view p-4 md:p-8 bg-gray-800 rounded-xl shadow-2xl">
+            <!-- Creator content will be rendered here by JavaScript -->
+        </div>
+
+        <!-- Test Taker View -->
+        <div id="view-take" class="view p-6 md:p-8 bg-gray-800 rounded-xl shadow-2xl">
+            <!-- Test taker will be rendered here by JavaScript -->
+        </div>
+    </main>
+
+    <!-- Modal -->
+    <div id="modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4" style="display: none;">
+        <div class="bg-gray-800 rounded-xl shadow-2xl p-8 w-full max-w-md text-center">
+            <p id="modal-message" class="text-white text-lg mb-6"></p>
+            <div class="flex justify-center gap-4">
+                <button id="modal-ok" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- State Management ---
+        let appState = {
+            currentView: 'loading',
+            tests: [],
+            currentTest: null, // For creating/editing
+            testToTake: null, // For taking a test
+            userAnswers: {},
+            timerInterval: null,
+        };
+
+        // --- API Helper ---
+        async function apiFetch(endpoint, options = {}) {
+            const defaultOptions = {
+                headers: { 'Content-Type': 'application/json' },
+            };
+            const response = await fetch(`/api/${endpoint}`, { ...defaultOptions, ...options });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'An unknown error occurred');
+            }
+            return response.json();
+        }
+
+        // --- View Management ---
+        function showView(viewName, data = null) {
+            document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+            const viewElement = document.getElementById(`view-${viewName}`);
+            viewElement.style.display = 'block';
+            viewElement.classList.add('animate-fade-in');
+            appState.currentView = viewName;
+
+            // Render content for the specific view
+            if (viewName === 'list') renderTestList();
+            if (viewName === 'create') renderCreator(data);
+            if (viewName === 'take') renderTestTaker(data);
+        }
+
+        // --- Modal ---
+        function showModal(message) {
+            document.getElementById('modal-message').textContent = message;
+            document.getElementById('modal').style.display = 'flex';
+        }
+        document.getElementById('modal-ok').addEventListener('click', () => {
+            document.getElementById('modal').style.display = 'none';
+        });
+
+        // --- Render Functions ---
+        function renderTestList() {
+            const container = document.getElementById('test-list-container');
+            if (appState.tests.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-16 border-2 border-dashed border-gray-600 rounded-lg">
+                        <p class="text-gray-400 text-lg">You haven't created any tests yet.</p>
+                        <p class="text-gray-500 mt-2">Click "Create New" to get started!</p>
+                    </div>`;
+                return;
+            }
+            container.innerHTML = appState.tests.map(test => `
+                <div class="bg-gray-700 p-4 rounded-lg flex flex-col md:flex-row justify-between items-center gap-4 transition hover:bg-gray-600/50 border border-gray-600">
+                    <div class="flex-grow">
+                        <h3 class="text-xl font-semibold text-gray-200">${test.title}</h3>
+                        <div class="flex items-center gap-4 text-sm text-gray-400 mt-1">
+                            <span>${test.questions.length} questions</span>
+                            <span class="flex items-center gap-1.5">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                ${test.duration} min
+                            </span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <button onclick="deleteTest('${test.id}')" class="p-2 text-red-400 hover:text-red-300 transition rounded-full bg-gray-800 hover:bg-red-500/20">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                        <button onclick="startTest('${test.id}')" class="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold transition shadow-sm">Start Test</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderCreator(existingTest = null) {
+            // This is a large function, so it's defined below in the event handlers section
+            const container = document.getElementById('view-create');
+            container.innerHTML = getCreatorHTML();
+            setupCreatorEventListeners();
+        }
+
+        function renderTestTaker(test) {
+            appState.testToTake = test;
+            appState.userAnswers = {};
+            appState.currentQuestionIndex = 0;
+            renderCurrentQuestion();
+            startTimer();
+        }
+
+        function renderCurrentQuestion() {
+            const test = appState.testToTake;
+            const question = test.questions[appState.currentQuestionIndex];
+            const container = document.getElementById('view-take');
+
+            const optionsHTML = question.options.map((opt, index) => `
+                <button onclick="selectAnswer(${index})" class="option-btn w-full text-left p-4 rounded-lg border-2 transition flex items-center bg-gray-600 border-gray-500 hover:bg-gray-500/50" data-option-index="${index}">
+                    <span class="font-mono mr-4 text-blue-300">${String.fromCharCode(65 + index)}.</span>
+                    ${opt}
+                </button>
+            `).join('');
+
+            container.innerHTML = `
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-bold text-blue-400">${test.title}</h2>
+                    <div id="timer" class="flex items-center gap-2 text-xl font-semibold text-yellow-400 bg-gray-700 px-4 py-2 rounded-lg">
+                        <!-- Timer here -->
+                    </div>
+                </div>
+                <p class="text-center text-gray-400 mb-6">Question ${appState.currentQuestionIndex + 1} of ${test.questions.length}</p>
+                <div class="bg-gray-700 p-6 rounded-lg border border-gray-600">
+                    <p class="text-xl mb-6 min-h-[6rem]">${question.questionText}</p>
+                    <div class="space-y-3">${optionsHTML}</div>
+                </div>
+                <div class="mt-8 flex justify-between items-center">
+                    <button onclick="endTest()" class="px-6 py-2 bg-red-600 hover:bg-red-500 rounded-lg font-semibold transition">End Test</button>
+                    <button id="next-btn" onclick="nextQuestion()" class="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition shadow-md">
+                        ${appState.currentQuestionIndex === test.questions.length - 1 ? 'Submit Test' : 'Next Question'}
+                    </button>
+                </div>
+            `;
+        }
+        
+        function renderResults() {
+            clearInterval(appState.timerInterval);
+            const test = appState.testToTake;
+            let correct = 0;
+            for (const q of test.questions) {
+                if (appState.userAnswers[q.id] !== undefined && appState.userAnswers[q.id] === q.correctOptionIndex) {
+                    correct++;
+                }
+            }
+            const total = test.questions.length;
+            const incorrect = total - correct;
+            const percentage = ((correct / total) * 100).toFixed(1);
+
+            document.getElementById('view-take').innerHTML = `
+                <div class="p-8 bg-gray-800 text-white rounded-xl shadow-2xl w-full max-w-2xl mx-auto text-center animate-fade-in">
+                    <h2 class="text-3xl font-bold mb-2 text-blue-400">Test Complete!</h2>
+                    <p class="text-lg mb-6 text-gray-300">Here's your performance for <span class="font-semibold">${test.title}</span></p>
+                    <div class="bg-gray-700 rounded-lg p-6 my-8 grid grid-cols-2 gap-4 text-left">
+                        <div class="text-center border-r border-gray-600"><p class="text-5xl font-bold text-green-400">${correct}</p><p class="text-gray-400">Correct</p></div>
+                        <div class="text-center"><p class="text-5xl font-bold text-red-400">${incorrect}</p><p class="text-gray-400">Incorrect</p></div>
+                    </div>
+                    <p class="text-4xl font-bold mb-8">Score: ${percentage}%</p>
+                    <div class="flex flex-col md:flex-row justify-center gap-4">
+                        <button onclick="showView('list')" class="px-8 py-3 bg-gray-600 hover:bg-gray-500 rounded-lg font-semibold transition shadow-md">Back to Test List</button>
+                        <button onclick="renderReview()" class="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition shadow-md">Review Answers</button>
+                    </div>
+                </div>`;
+        }
+
+        function renderReview() {
+             const test = appState.testToTake;
+             const reviewHTML = test.questions.map((q, index) => {
+                const userAnswer = appState.userAnswers[q.id];
+                const isCorrect = userAnswer === q.correctOptionIndex;
+                const optionsHTML = q.options.map((option, oIndex) => {
+                    let optionClass = 'border-gray-500 bg-gray-600';
+                    if (oIndex === q.correctOptionIndex) optionClass = 'border-green-500 bg-green-500/20';
+                    if (oIndex === userAnswer && !isCorrect) optionClass = 'border-red-500 bg-red-500/20';
+                    return `<div class="p-3 rounded-lg border-2 flex items-center ${optionClass}"><span class="font-mono mr-3">${String.fromCharCode(65 + oIndex)}.</span><span>${option}</span></div>`;
+                }).join('');
+
+                return `
+                    <div class="bg-gray-700 p-6 rounded-lg border border-gray-600">
+                        <p class="text-lg font-semibold mb-4">Q${index + 1}. ${q.questionText}</p>
+                        <div class="space-y-2">${optionsHTML}</div>
+                        <div class="mt-4 p-3 rounded-lg bg-gray-800 flex items-center gap-3">
+                            ${isCorrect ? '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" /></svg>'}
+                            <div>
+                                <p class="text-sm text-gray-400">Your Answer: ${userAnswer !== undefined ? String.fromCharCode(65 + userAnswer) : 'Not Answered'}</p>
+                                <p class="text-sm font-semibold">Correct Answer: ${String.fromCharCode(65 + q.correctOptionIndex)}</p>
+                                ${q.explanation ? `<p class='text-sm text-blue-300 mt-2'>📌 ${q.explanation}</p>` : ''}
+                            </div>
+                        </div>
+                    </div>`;
+             }).join('');
+
+             document.getElementById('view-take').innerHTML = `
+                <div class="p-4 md:p-8 bg-gray-800 text-white rounded-xl shadow-2xl w-full max-w-4xl mx-auto animate-fade-in">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-3xl font-bold text-blue-400">Answer Review</h2>
+                        <button onclick="renderResults()" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition">Back to Summary</button>
+                    </div>
+                    <div class="space-y-6">${reviewHTML}</div>
+                </div>`;
+        }
+
+        // --- Event Handlers & Logic ---
+        async function loadTests() {
+            try {
+                appState.tests = await apiFetch('tests');
+                showView('list');
+            } catch (error) {
+                showModal(`Error loading tests: ${error.message}`);
+            }
+        }
+
+        async function deleteTest(testId) {
+            if (confirm('Are you sure you want to delete this test permanently?')) {
+                try {
+                    await apiFetch(`tests/${testId}`, { method: 'DELETE' });
+                    loadTests(); // Refresh the list
+                } catch (error) {
+                    showModal(`Error deleting test: ${error.message}`);
+                }
+            }
+        }
+
+        function startTest(testId) {
+            const test = appState.tests.find(t => t.id === testId);
+            if (test) {
+                showView('take', test);
+            }
+        }
+        
+        function selectAnswer(optionIndex) {
+            const question = appState.testToTake.questions[appState.currentQuestionIndex];
+            appState.userAnswers[question.id] = optionIndex;
+            // Highlight selected option
+            document.querySelectorAll('.option-btn').forEach(btn => {
+                btn.classList.remove('bg-blue-500', 'border-blue-400');
+                btn.classList.add('bg-gray-600', 'border-gray-500');
+            });
+            const selectedBtn = document.querySelector(`.option-btn[data-option-index="${optionIndex}"]`);
+            selectedBtn.classList.add('bg-blue-500', 'border-blue-400');
+        }
+
+        function nextQuestion() {
+            if (appState.currentQuestionIndex < appState.testToTake.questions.length - 1) {
+                appState.currentQuestionIndex++;
+                renderCurrentQuestion();
+            } else {
+                endTest();
+            }
+        }
+        
+        function endTest() {
+            clearInterval(appState.timerInterval);
+            renderResults();
+        }
+
+        function startTimer() {
+            let timeLeft = appState.testToTake.duration * 60;
+            const timerEl = document.getElementById('timer');
+            
+            function updateTimer() {
+                const minutes = Math.floor(timeLeft / 60).toString().padStart(2, '0');
+                const seconds = (timeLeft % 60).toString().padStart(2, '0');
+                if (timerEl) timerEl.innerHTML = `<span>${minutes}:${seconds}</span>`;
+            }
+
+            updateTimer(); // Initial call
+            appState.timerInterval = setInterval(() => {
+                timeLeft--;
+                updateTimer();
+                if (timeLeft <= 0) {
+                    endTest();
+                }
+            }, 1000);
+        }
+
+        // --- Creator Logic ---
+        function getCreatorHTML() {
+            return `
+                <h2 class="text-3xl font-bold mb-6 text-center text-blue-400">Create New Mock Test</h2>
+                <div class="flex justify-center border-b border-gray-600 mb-6" id="creator-tabs">
+                    <button data-mode="generate" class="creator-tab px-4 py-2 text-lg font-semibold text-blue-400 border-b-2 border-blue-400">Generate with AI</button>
+                    <button data-mode="import" class="creator-tab px-4 py-2 text-lg font-semibold text-gray-400 hover:text-white">Import from Text</button>
+                    <button data-mode="manual" class="creator-tab px-4 py-2 text-lg font-semibold text-gray-400 hover:text-white">Manual Entry</button>
+                </div>
+
+                <!-- AI Generator -->
+                <div id="creator-mode-generate" class="creator-mode bg-gray-700/50 p-6 rounded-lg border border-dashed border-gray-600 text-center">
+                    <h3 class="text-xl font-semibold mb-2">Generate a Mock Test using AI</h3>
+                    <p class="text-gray-400 mb-4">Enter an exam name, and the AI will create a paper for you.</p>
+                    <input type="text" id="exam-name-input" placeholder="e.g., SSC CGL Tier 1 Quantitative Aptitude" class="w-full max-w-lg mx-auto p-3 bg-gray-900 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 mb-2">
+                    <input type="number" id="exam-duration-input" placeholder="Duration (minutes) - optional" class="w-full max-w-lg mx-auto p-3 bg-gray-900 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 mb-2">
+                    <input type="number" id="exam-question-count-input" placeholder="Number of Questions - optional" class="w-full max-w-lg mx-auto p-3 bg-gray-900 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 mb-2">
+                    <button id="generate-paper-btn" class="mt-4 flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition shadow-md mx-auto">
+                        <span class="btn-text">Generate Paper</span>
+                        <div class="spinner" style="display: none;"></div>
+                    </button>
+                </div>
+
+                <!-- Text Importer -->
+                <div id="creator-mode-import" class="creator-mode" style="display: none;">
+                    <h3 class="text-xl font-semibold mb-2">Import Questions from Text</h3>
+                    <p class="text-gray-400 mb-4">Paste your questions below. The AI will parse and structure them for you.</p>
+                    <textarea id="import-textarea" rows="8" class="w-full p-3 bg-gray-900 border border-gray-600 rounded-lg mb-4" placeholder="Paste questions here..."></textarea>
+                    <div class="flex gap-2 mb-4">
+                        <button id="import-parse-btn" class="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition shadow-md">Parse & Import</button>
+                        <button id="import-clear-btn" class="px-6 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg font-semibold transition shadow-md">Clear Imported</button>
+                    </div>
+                    <div id="import-preview" class="mb-4"></div>
+                    <div id="import-summary" class="text-sm text-gray-300"></div>
+                </div>
+                
+                <!-- Manual Editor -->
+                <div id="creator-mode-manual" class="creator-mode" style="display: none;">
+                    <h3 class="text-xl font-semibold mb-2">Manual Question Entry</h3>
+                    <div class="flex flex-col md:flex-row gap-2 mb-2">
+                        <input type="text" id="manual-title-input" placeholder="Test Title" class="w-full md:w-1/2 p-2 bg-gray-800 border border-gray-600 rounded mb-2">
+                        <input type="number" id="manual-duration-input" placeholder="Duration (minutes)" class="w-full md:w-1/4 p-2 bg-gray-800 border border-gray-600 rounded mb-2">
+                        <input type="text" id="manual-search-input" placeholder="Search questions..." class="w-full md:w-1/4 p-2 bg-gray-800 border border-gray-600 rounded mb-2">
+                    </div>
+                    <div class="flex flex-col md:flex-row gap-2 mb-2">
+                        <button id="collapse-all-btn" class="px-4 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">Collapse All</button>
+                        <button id="expand-all-btn" class="px-4 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">Expand All</button>
+                        <button id="bulk-edit-btn" class="px-4 py-1 bg-blue-700 hover:bg-blue-600 rounded text-sm">Bulk Edit (JSON)</button>
+                    </div>
+                    <div id="manual-editor-container"></div>
+                    <div id="bulk-edit-modal" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4" style="display:none;">
+                        <div class="bg-gray-800 rounded-xl shadow-2xl p-8 w-full max-w-2xl text-center">
+                            <h4 class="text-lg font-bold mb-2">Bulk Edit Questions (JSON)</h4>
+                            <textarea id="bulk-edit-textarea" rows="16" class="w-full p-2 bg-gray-900 border border-gray-600 rounded mb-4"></textarea>
+                            <div class="flex justify-center gap-4">
+                                <button id="bulk-edit-save" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">Save</button>
+                                <button id="bulk-edit-cancel" class="px-6 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg font-semibold">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex flex-col md:flex-row gap-2 mt-2">
+                        <button id="add-question-btn" class="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold">Add Question</button>
+                        <button id="generate-more-btn" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">Generate More</button>
+                    </div>
+                    <div class="mt-8 flex justify-end gap-4">
+                        <button onclick="showView('list')" class="px-8 py-3 bg-gray-600 hover:bg-gray-500 rounded-lg font-semibold">Cancel</button>
+                        <button onclick="saveTest()" class="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">Save Test</button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function setupCreatorEventListeners() {
+            // Tab switching
+            document.querySelectorAll('.creator-tab').forEach(tab => {
+                tab.addEventListener('click', (e) => {
+                    const mode = e.target.dataset.mode;
+                    document.querySelectorAll('.creator-tab').forEach(t => {
+                        t.classList.remove('text-blue-400', 'border-blue-400');
+                        t.classList.add('text-gray-400', 'hover:text-white');
+                    });
+                    e.target.classList.add('text-blue-400', 'border-blue-400');
+                    e.target.classList.remove('text-gray-400', 'hover:text-white');
+                    
+                    document.querySelectorAll('.creator-mode').forEach(m => m.style.display = 'none');
+                    document.getElementById(`creator-mode-${mode}`).style.display = 'block';
+                });
+            });
+
+            // AI Paper Generation
+            document.getElementById('generate-paper-btn').addEventListener('click', async () => {
+                const examName = document.getElementById('exam-name-input').value;
+                const durationInput = document.getElementById('exam-duration-input').value;
+                const questionCountInput = document.getElementById('exam-question-count-input').value;
+                if (!examName.trim()) {
+                    showModal('Please enter an exam name.');
+                    return;
+                }
+                const btn = document.getElementById('generate-paper-btn');
+                btn.disabled = true;
+                btn.querySelector('.btn-text').textContent = 'Generating...';
+                btn.querySelector('.spinner').style.display = 'block';
+
+                try {
+                    // Send extra params to backend if provided
+                    const payload = { examName };
+                    if (durationInput) payload.duration = parseInt(durationInput);
+                    if (questionCountInput) payload.questionCount = parseInt(questionCountInput);
+                    const paper = await apiFetch('generate-paper', {
+                        method: 'POST',
+                        body: JSON.stringify(payload)
+                    });
+                    const expectedCount = questionCountInput ? parseInt(questionCountInput) : null;
+                    const validatedQuestions = paper.questions.filter(q => q.questionText && q.questionText.trim() !== "");
+                    appState.currentTest = {
+                        title: paper.title,
+                        duration: paper.duration,
+                        questions: validatedQuestions.map(q => ({...q, id: crypto.randomUUID()}))
+                    };
+                    let warning = '';
+                    if (expectedCount && validatedQuestions.length < expectedCount) {
+                        warning = `Warning: Only ${validatedQuestions.length} out of ${expectedCount} questions were generated. You can add more manually.`;
+                    }
+                    showModal(`Successfully generated a paper for "${paper.title}"! ${warning}`);
+                    // Switch to manual view to show the generated paper
+                    document.querySelector('.creator-tab[data-mode="manual"]').click();
+                    renderManualEditor();
+
+                } catch (error) {
+                    showModal(`Error generating paper: ${error.message}`);
+                } finally {
+                    btn.disabled = false;
+                    btn.querySelector('.btn-text').textContent = 'Generate Paper';
+                    btn.querySelector('.spinner').style.display = 'none';
+                }
+            });
+
+            // Import from Text
+            const importBtn = document.getElementById('import-parse-btn');
+            const importClearBtn = document.getElementById('import-clear-btn');
+            const importPreview = document.getElementById('import-preview');
+            const importSummary = document.getElementById('import-summary');
+            if (importBtn) {
+                importBtn.addEventListener('click', async () => {
+                    const text = document.getElementById('import-textarea').value;
+                    if (!text.trim()) {
+                        showModal('Please paste some questions to import.');
+                        return;
+                    }
+                    importBtn.disabled = true;
+                    importBtn.textContent = 'Parsing...';
+                    importPreview.innerHTML = '';
+                    importSummary.textContent = '';
+                    try {
+                        const questions = await apiFetch('parse-text', {
+                            method: 'POST',
+                            body: JSON.stringify({ text })
+                        });
+                        importPreview.innerHTML = `<div class='mb-2 text-green-400'>Preview (${questions.length} questions):</div>` +
+                            questions.slice(0, 10).map((q, i) => `<div class='text-xs text-gray-200 mb-1'>${i+1}. ${q.questionText}</div>`).join('') +
+                            (questions.length > 10 ? `<div class='text-xs text-gray-400'>...and ${questions.length-10} more</div>` : '');
+                        importSummary.textContent = `Imported ${questions.length} questions. Edit title/duration below, then switch to Manual to review.`;
+                        appState.currentTest = {
+                            title: 'Imported Test',
+                            duration: 60,
+                            questions: questions.map(q => ({...q, id: crypto.randomUUID()}))
+                        };
+                        document.getElementById('manual-title-input').value = appState.currentTest.title;
+                        document.getElementById('manual-duration-input').value = appState.currentTest.duration;
+                    } catch (error) {
+                        importPreview.innerHTML = '';
+                        importSummary.textContent = '';
+                        showModal(`Error parsing questions: ${error.message}`);
+                    } finally {
+                        importBtn.disabled = false;
+                        importBtn.textContent = 'Parse & Import';
+                    }
+                });
+            }
+            if (importClearBtn) {
+                importClearBtn.addEventListener('click', () => {
+                    document.getElementById('import-textarea').value = '';
+                    importPreview.innerHTML = '';
+                    importSummary.textContent = '';
+                });
+            }
+            // Manual Editor
+            const addQBtn = document.getElementById('add-question-btn');
+            if (addQBtn) {
+                addQBtn.addEventListener('click', () => {
+                    if (!appState.currentTest) {
+                        appState.currentTest = { title: '', duration: 60, questions: [] };
+                    }
+                    appState.currentTest.questions.push({
+                        id: crypto.randomUUID(),
+                        questionText: '',
+                        options: ['', '', '', ''],
+                        correctOptionIndex: 0
+                    });
+                    renderManualEditor();
+                });
+            }
+            // Generate More Button
+            const genMoreBtn = document.getElementById('generate-more-btn');
+            if (genMoreBtn) {
+                genMoreBtn.addEventListener('click', async () => {
+                    if (!appState.currentTest || !appState.currentTest.title) {
+                        showModal('Please generate or import a test first.');
+                        return;
+                    }
+                    const count = prompt('How many more questions to generate? (Recommended: 5-20 per batch)');
+                    const num = parseInt(count);
+                    if (!num || num < 1) {
+                        showModal('Please enter a valid number of questions.');
+                        return;
+                    }
+                    genMoreBtn.disabled = true;
+                    genMoreBtn.textContent = 'Generating...';
+                    try {
+                        const payload = {
+                            examName: appState.currentTest.title,
+                            questionCount: num,
+                            duration: appState.currentTest.duration
+                        };
+                        const paper = await apiFetch('generate-paper', {
+                            method: 'POST',
+                            body: JSON.stringify(payload)
+                        });
+                        const validatedQuestions = paper.questions.filter(q => q.questionText && q.questionText.trim() !== "");
+                        validatedQuestions.forEach(q => q.id = crypto.randomUUID());
+                        appState.currentTest.questions = appState.currentTest.questions.concat(validatedQuestions);
+                        showModal(`Added ${validatedQuestions.length} more questions!`);
+                        renderManualEditor();
+                    } catch (error) {
+                        showModal(`Error generating more questions: ${error.message}`);
+                    } finally {
+                        genMoreBtn.disabled = false;
+                        genMoreBtn.textContent = 'Generate More';
+                    }
+                });
+            }
+            // Collapse All
+            const collapseAllBtn = document.getElementById('collapse-all-btn');
+            if (collapseAllBtn) {
+                collapseAllBtn.addEventListener('click', () => {
+                    document.querySelectorAll('.manual-q-card').forEach(card => {
+                        card.classList.add('collapsed');
+                    });
+                });
+            }
+            // Expand All
+            const expandAllBtn = document.getElementById('expand-all-btn');
+            if (expandAllBtn) {
+                expandAllBtn.addEventListener('click', () => {
+                    document.querySelectorAll('.manual-q-card').forEach(card => {
+                        card.classList.remove('collapsed');
+                    });
+                });
+            }
+        }
+        function renderManualEditor() {
+            const container = document.getElementById('manual-editor-container');
+            const test = appState.currentTest;
+            if (!test || test.questions.length === 0) {
+                container.innerHTML = `<p class="text-center text-gray-400">No questions yet. Add or import questions to begin.</p>`;
+                return;
+            }
+            // Search/filter
+            const search = document.getElementById('manual-search-input')?.value?.toLowerCase() || '';
+            let filtered = test.questions;
+            if (search) {
+                filtered = test.questions.filter(q => (q.questionText || '').toLowerCase().includes(search));
+            }
+            container.innerHTML = filtered.map((q, i) => `
+                <div class="bg-gray-700 p-4 rounded-lg mb-4 manual-q-card" id="qcard-${q.id}">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="font-bold text-blue-300">Q${i + 1}</span>
+                        <div class="flex gap-2">
+                            <button class="text-xs text-gray-400 hover:text-blue-400" onclick="moveManualQuestion('${q.id}', -1)">↑</button>
+                            <button class="text-xs text-gray-400 hover:text-blue-400" onclick="moveManualQuestion('${q.id}', 1)">↓</button>
+                            <button class="text-xs text-gray-400 hover:text-yellow-400" onclick="toggleCollapseManualQuestion('${q.id}')">Collapse</button>
+                        </div>
+                    </div>
+                    <div class="manual-q-body">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">Question</label>
+                        <textarea class="w-full p-2 mb-2 bg-gray-800 border border-gray-600 rounded" data-qid="${q.id}" data-field="questionText">${q.questionText || ''}</textarea>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                            ${q.options.map((opt, oi) => `
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Option ${String.fromCharCode(65 + oi)}</label>
+                                    <input type="text" class="w-full p-2 bg-gray-800 border border-gray-600 rounded" data-qid="${q.id}" data-field="option${oi}" value="${opt || ''}">
+                                </div>
+                            `).join('')}
+                        </div>
+                        <label class="block text-xs text-gray-400 mb-1">Correct Option</label>
+                        <select class="w-full p-2 mb-2 bg-gray-800 border border-gray-600 rounded" data-qid="${q.id}" data-field="correctOptionIndex">
+                            ${q.options.map((_, oi) => `<option value="${oi}" ${q.correctOptionIndex === oi ? 'selected' : ''}>${String.fromCharCode(65 + oi)}</option>`).join('')}
+                        </select>
+                        <button class="mt-2 px-4 py-1 bg-red-600 hover:bg-red-700 rounded text-sm" onclick="removeManualQuestion('${q.id}')">Remove</button>
+                        <span class="ml-4 text-xs ${!q.questionText || q.options.some(opt => !opt) ? 'text-red-400' : 'text-green-400'}">
+                            ${!q.questionText || q.options.some(opt => !opt) ? 'Incomplete' : 'Complete'}
+                        </span>
+                    </div>
+                </div>
+            `).join('');
+            // Add event listeners for manual editing
+            container.querySelectorAll('textarea, input, select').forEach(el => {
+                el.addEventListener('input', (e) => {
+                    const qid = el.getAttribute('data-qid');
+                    const field = el.getAttribute('data-field');
+                    const q = test.questions.find(qq => qq.id === qid);
+                    if (!q) return;
+                    if (field === 'questionText') q.questionText = el.value;
+                    if (field && field.startsWith('option')) {
+                        const idx = parseInt(field.replace('option', ''));
+                        q.options[idx] = el.value;
+                    }
+                    if (field === 'correctOptionIndex') q.correctOptionIndex = parseInt(el.value);
+                    // Auto-scroll to edited question
+                    document.getElementById('qcard-' + qid)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                });
+            });
+            // Collapse/expand logic
+            container.querySelectorAll('.manual-q-card').forEach(card => {
+                card.classList.remove('collapsed');
+            });
+        }
+        function removeManualQuestion(qid) {
+            if (!appState.currentTest) return;
+            appState.currentTest.questions = appState.currentTest.questions.filter(q => q.id !== qid);
+            renderManualEditor();
+        }
+        function moveManualQuestion(qid, dir) {
+            if (!appState.currentTest) return;
+            const idx = appState.currentTest.questions.findIndex(q => q.id === qid);
+            if (idx < 0) return;
+            const newIdx = idx + dir;
+            if (newIdx < 0 || newIdx >= appState.currentTest.questions.length) return;
+            const arr = appState.currentTest.questions;
+            [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+            renderManualEditor();
+        }
+        function toggleCollapseManualQuestion(qid) {
+            const card = document.getElementById('qcard-' + qid);
+            if (card) card.classList.toggle('collapsed');
+        }
+
+        async function saveTest() {
+            const testToSave = {
+                ...appState.currentTest,
+                id: crypto.randomUUID(),
+                createdAt: new Date().toISOString()
+            };
+            try {
+                await apiFetch('tests', {
+                    method: 'POST',
+                    body: JSON.stringify(testToSave)
+                });
+                showModal('Test saved successfully!');
+                loadTests(); // Reload and switch to list view
+            } catch (error) {
+                showModal(`Error saving test: ${error.message}`);
+            }
+        }
+
+        // --- Initial Load ---
+        window.addEventListener('DOMContentLoaded', () => {
+            loadTests();
+        });
+    </script>
+</body>
+</html>
